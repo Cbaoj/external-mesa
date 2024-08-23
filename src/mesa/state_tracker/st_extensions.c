@@ -47,6 +47,9 @@
 #include "st_extensions.h"
 #include "st_format.h"
 
+#if defined(ANDROID)
+#include <cutils/log.h>
+#endif
 
 /*
  * Note: we use these function rather than the MIN2, MAX2, CLAMP macros to
@@ -1042,12 +1045,6 @@ void st_init_extensions(struct pipe_screen *screen,
           PIPE_FORMAT_ASTC_12x10_SRGB,
           PIPE_FORMAT_ASTC_12x12_SRGB } },
 
-      /* ASTC software fallback support. */
-      { { o(KHR_texture_compression_astc_ldr),
-          o(KHR_texture_compression_astc_sliced_3d) },
-        { PIPE_FORMAT_R8G8B8A8_UNORM,
-          PIPE_FORMAT_R8G8B8A8_SRGB } },
-
       { { o(EXT_texture_shared_exponent) },
         { PIPE_FORMAT_R9G9B9E5_FLOAT } },
 
@@ -1099,6 +1096,15 @@ void st_init_extensions(struct pipe_screen *screen,
         { PIPE_FORMAT_ATC_RGB,
           PIPE_FORMAT_ATC_RGBA_EXPLICIT,
           PIPE_FORMAT_ATC_RGBA_INTERPOLATED } },
+   };
+
+   /* ASTC software fallback */
+   static const struct st_extension_format_mapping astc_fallback_mapping[] = {
+      /* ASTC software fallback support. */
+      { { o(KHR_texture_compression_astc_ldr),
+          o(KHR_texture_compression_astc_sliced_3d) },
+        { PIPE_FORMAT_R8G8B8A8_UNORM,
+          PIPE_FORMAT_R8G8B8A8_SRGB } },
    };
 
    /* Required: vertex fetch support. */
@@ -1154,6 +1160,16 @@ void st_init_extensions(struct pipe_screen *screen,
    init_format_extensions(screen, extensions, vertex_mapping,
                           ARRAY_SIZE(vertex_mapping), PIPE_BUFFER,
                           PIPE_BIND_VERTEX_BUFFER);
+   if (options->astc_fallback) {
+      init_format_extensions(screen, extensions, astc_fallback_mapping,
+                          ARRAY_SIZE(astc_fallback_mapping), PIPE_TEXTURE_2D,
+                          PIPE_BIND_SAMPLER_VIEW);
+   }
+#if defined(ANDROID)
+   if (!extensions->KHR_texture_compression_astc_ldr) {
+       ALOGD("ASTC is not enabled");
+   }
+#endif
 
    /* Figure out GLSL support and set GLSLVersion to it. */
    consts->GLSLVersion = screen->get_param(screen, PIPE_CAP_GLSL_FEATURE_LEVEL);
