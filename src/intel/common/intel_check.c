@@ -7,7 +7,9 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <stdbool.h>
+#ifdef ANDROID
 #include <cutils/properties.h>
+#endif
 #include "util/macros.h"
 #include "util/log.h"
 #include "drm-uapi/i915_drm.h"
@@ -40,6 +42,7 @@ get_pid_name(pid_t pid, char *task_name)
 static bool
 use_dgpu_render(char *target)
 {
+#ifdef ANDROID
    char dGPU_prop[BUF_SIZE];
    char vendor_buf[PROPERTY_VALUE_MAX];
    sprintf(dGPU_prop, "persist.vendor.intel.dGPU.%s",target);
@@ -48,12 +51,14 @@ use_dgpu_render(char *target)
          return true;
       }
    }
+#endif
    return false;
 }
 
 static bool
 is_target_process(char *target)
 {
+#ifdef ANDROID
    char *str_char[] = { "k.lite:refinery", "k.lite:transfer", NULL };
    char **ptr = str_char;
 
@@ -69,6 +74,7 @@ is_target_process(char *target)
          }
       }
    }
+#endif
    return false;
 }
 
@@ -82,6 +88,7 @@ bool intel_is_dgpu_render(void) {
 
 bool intel_lower_ctx_priority(void)
 {
+#ifdef ANDROID
    pid_t process_id = getpid();
    char process_name[BUF_SIZE];
    get_pid_name(process_id, process_name);
@@ -94,6 +101,7 @@ bool intel_lower_ctx_priority(void)
          return true;
       }
    }
+#endif
    return false;
 }
 
