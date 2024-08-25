@@ -803,6 +803,10 @@ struct gl_texture_image
     * as well as image copies.
     */
    struct st_compressed_data* compressed_data;
+
+   /* astc trancode cache */
+   uint64_t Hash; /* image data hash */
+   uint16_t CacheType;
 };
 
 

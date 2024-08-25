@@ -146,6 +146,7 @@ struct st_context
    bool has_etc2;
    bool transcode_etc;
    bool transcode_astc;
+   bool transcode_cache;
    bool has_astc_2d_ldr;
    bool has_astc_5x5_ldr;
    bool astc_void_extents_need_denorm_flush;

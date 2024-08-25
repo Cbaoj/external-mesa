@@ -1558,6 +1558,12 @@ else
   dep_clock = cc.find_library('rt')
 endif
 
+if host_machine.system() == 'linux'
+  dep_bsd = dependency('libbsd', required : true)
+else
+  dep_bsd = null_dep
+endif
+
 dep_zlib = dependency('zlib', version : '>= 1.2.3',
                       allow_fallback: true,
                       required : get_option('zlib'))

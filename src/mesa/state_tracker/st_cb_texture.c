@@ -68,6 +68,7 @@
 #include "state_tracker/st_sampler_view.h"
 #include "state_tracker/st_texcompress_compute.h"
 #include "state_tracker/st_util.h"
+#include "state_tracker/astc_cache.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -556,11 +557,13 @@ log_unmap_time_delta(const struct pipe_box *box,
                      const char *pathname, int64_t start_us)
 {
    assert(start_us >= 0);
-   mesa_logi("unmap %dx%d pixels of %s data for %s tex, %s path: "
+   if(box->width >= 512 && box->height >= 512) {
+      mesa_logi("unmap %dx%d pixels of %s data for %s tex, %s path: "
              "%"PRIi64" us\n", box->width, box->height,
              util_format_short_name(texImage->TexFormat),
              util_format_short_name(texImage->pt->format),
              pathname, os_time_get() - start_us);
+   }
 }
 
 /**
@@ -621,6 +624,43 @@ upload_astc_slice_with_flushed_void_extents(uint8_t *dst,
    }
 }
 
+static bool tcc_can_cache(struct st_context *st,
+                                   struct gl_texture_image *texImage,
+                                   struct st_texture_image_transfer *itransfer,
+                                   uint16_t *type, uint64_t *hash)
+{
+   bool can_cache = st->transcode_cache &&
+                    util_format_is_compressed(texImage->pt->format) &&
+                    _mesa_is_format_astc_2d(texImage->TexFormat) &&
+                   itransfer->box.x == 0 &&
+                   itransfer->box.y == 0 &&
+                   itransfer->box.width == texImage->Width &&
+                   itransfer->box.height == texImage->Height;
+
+   if (can_cache) {
+      if (texImage->Level == 0) {
+         can_cache = astc_tcc_can_cache(texImage->Width, texImage->Height);
+         if (can_cache) {
+            unsigned blk_w, blk_h, y_blocks;
+            _mesa_get_format_block_size(texImage->TexFormat, &blk_w, &blk_h);
+            y_blocks = DIV_ROUND_UP(texImage->Height2, blk_h);
+            texImage->CacheType = astc_tcc_make_type(texImage->TexFormat, astc_tcc_get_max_level(texImage->Width));
+            texImage->Hash = astc_tcc_hash(itransfer->temp_data, itransfer->temp_stride * y_blocks);
+            *type = texImage->CacheType;
+            *hash = texImage->Hash;
+         }
+      } else {
+         struct gl_texture_image *texImage0 = texImage->TexObject->Image[texImage->Face][0];
+         can_cache = texImage0->Hash && texImage0->CacheType;
+         if (can_cache) {
+            *type = texImage0->CacheType;
+            *hash = texImage0->Hash;
+         }
+      }
+   }
+   return can_cache;
+}
+
 void
 st_UnmapTextureImage(struct gl_context *ctx,
                      struct gl_texture_image *texImage,
@@ -638,7 +678,7 @@ st_UnmapTextureImage(struct gl_context *ctx,
          assert(itransfer->box.depth == 1);
 
          /* Toggle logging for the different unmap paths. */
-         const bool log_unmap_time = false;
+         const bool log_unmap_time = true;
          const int64_t unmap_start_us = log_unmap_time ? os_time_get() : 0;
 
          if (_mesa_is_format_astc_2d(texImage->TexFormat) &&
@@ -649,6 +689,47 @@ st_UnmapTextureImage(struct gl_context *ctx,
             assert(texImage->pt->format == PIPE_FORMAT_DXT5_RGBA ||
                    texImage->pt->format == PIPE_FORMAT_DXT5_SRGBA);
 
+            uint16_t type = 0;
+            uint64_t hash = 0;
+            uint8_t* cache_ptr = NULL;
+            uint32_t cache_stride = 0;
+            uint32_t cache_height = 0;
+            bool can_cache = tcc_can_cache(st, texImage, itransfer, &type, &hash);
+            if (can_cache) {
+               cache_ptr = astc_tcc_get(type, texImage->Level, hash, &cache_stride, &cache_height);
+               TCC_LOGD("tcc_can_cache: type=%.4x level=%d hash=%" PRIx64 " cached_ptr=%p stride=%d height=%d",
+                      type, texImage->Level, hash, cache_ptr, cache_stride, cache_height);
+               if (log_unmap_time) {
+                  log_unmap_time_delta(&itransfer->box, texImage, "TCCLOOKUP", unmap_start_us);
+               }
+               //cache_ptr = 0; //uncomment this line to test always-first-time latency
+            }
+            if (cache_ptr && cache_stride && cache_height) {
+               uint8_t* src = cache_ptr;
+               struct pipe_transfer *transfer;
+               uint8_t* dst  = pipe_texture_map(st->pipe, texImage->pt, 
+                                             st_texture_image_resource_level(texImage), 0,
+                                             PIPE_MAP_WRITE |
+                                             PIPE_MAP_DISCARD_RANGE,
+                                             0, 0, itransfer->box.width, itransfer->box.height,
+                                             &transfer);
+               uint32_t dst_stride = transfer->stride;
+               if(cache_stride == dst_stride) { /* is this safe? */
+                  memcpy(dst, src, cache_height * cache_stride);
+               } else {
+                  for (uint32_t i = 0; i < cache_height; i++) {
+                     memcpy(dst, src, cache_stride);
+                     src += cache_stride;
+                     dst += dst_stride;
+                  }
+               }
+               pipe_texture_unmap(st->pipe, transfer);
+               if (log_unmap_time) {
+                  log_unmap_time_delta(&itransfer->box, texImage, "TCCUPLOAD", unmap_start_us);
+               }
+               memset(itransfer, 0, sizeof(struct st_texture_image_transfer));
+               return;
+            }
             /* Try a compute-based transcode. */
             if (itransfer->box.x == 0 &&
                 itransfer->box.y == 0 &&
@@ -664,8 +745,22 @@ st_UnmapTextureImage(struct gl_context *ctx,
                    itransfer->box.z)) {
 
                if (log_unmap_time) {
-                  log_unmap_time_delta(&itransfer->box, texImage, "GPU",
+                   log_unmap_time_delta(&itransfer->box, texImage, "GPU",
                                        unmap_start_us);
+               }
+               if (can_cache) {
+                   struct pipe_transfer *transfer;
+                   uint8_t* src = pipe_texture_map(st->pipe, texImage->pt, 
+                                             st_texture_image_resource_level(texImage), 0,
+                                             PIPE_MAP_READ,
+                                             0, 0, itransfer->box.width, itransfer->box.height,
+                                             &transfer);
+                   uint32_t src_stride = transfer->stride;
+                   astc_tcc_put(type, texImage->Level, hash, src, src_stride);
+                   pipe_texture_unmap(st->pipe, transfer);
+                   if (log_unmap_time) {
+                      log_unmap_time_delta(&itransfer->box, texImage, "GPU+TCCPUT", unmap_start_us);
+                   }
                }
 
                /* Mark the unmap as complete. */

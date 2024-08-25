@@ -370,6 +370,8 @@ files_libmesa = files(
   'state_tracker/st_util.h',
   'state_tracker/st_vdpau.c',
   'state_tracker/st_vdpau.h',
+  'state_tracker/astc_cache.c',
+  'state_tracker/astc_cache.h',
   'vbo/vbo.h',
   'vbo/vbo_attrib.h',
   'vbo/vbo_attrib_tmp.h',
