@@ -1558,7 +1558,7 @@ else
   dep_clock = cc.find_library('rt')
 endif
 
-if host_machine.system() == 'linux'
+if host_machine.system() == 'linux' and not with_platform_android
   dep_bsd = dependency('libbsd', required : true)
 else
   dep_bsd = null_dep
