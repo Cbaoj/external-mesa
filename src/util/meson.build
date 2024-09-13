@@ -298,7 +298,7 @@ idep_mesautil = declare_dependency(
 )
 
 # Only install the drirc file if we build with support for parsing drirc files
-if use_xmlconfig
+if use_xmlconfig and not with_platform_android
    install_data(files_drirc, install_dir : join_paths(get_option('datadir'), 'drirc.d'), install_tag : 'runtime')
 endif
 
